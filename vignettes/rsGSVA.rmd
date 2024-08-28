@@ -1,0 +1,117 @@
+---
+title: "An introduction to rsGSVA"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{An introduction to rsGSVA}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Introduction
+
+_rsGSVA_ provides an alternative approach to calculating gene set variation analysis (GSVA) scores (Hanzelmann et al, 2013) which leverages a reference dataset to estimate gene-level distributions.
+
+GSVA is a popular technique which summarizes the activity of a collection of genes into one score for each subject. This is particularly helpful for situations where known gene pathways exist and we want to summarize the activity of the pathway genes for each subject. With these scores, one may then compare the pathway activity across different conditions (e.g., healthy versus diseased subjects).
+
+The basic concept of GSVA is as follows:
+
+1. Estimate the cumulative density function for each gene.
+
+2. Obtain the percentile of the observed expression using the cumulative densities from step 1.
+
+3. For each subject, find the sort order their percentiles across all genes and scale so they are centered around 0.
+
+4. For each gene set, derive a random walk statistic using the scaled order values obtained from step 3.
+
+5. Calculate the enrichment score based on an optimization of the random walk statistic from step 4.
+
+In the default version of GSVA, step 1 estimates the cumulative density based on the same data used for estimating the GSVA scores (i.e., the same dataset is used through all steps in the algorithm). However, this does not adequately account for situations where subject expression may be skewed based on certain conditions (e.g., all diseased subjects) or when limited sample size is available. Therefore, we also propose a stable GSVA approach where step 1 estimates the gene's cumulative densities based on an existing dataset, and the final GSVA scores are calculated based on the new dataset of interest.
+
+Note that the enrichment score calculated in step 5 may be done using two different approaches. One approach (i.e., the *magnitude difference between the largest positive and negative random walk deviations*) assumes that the genes should all be "up" or "down" regulated within a given gene set, and it produces a distribution that is approximately normal. If GSVA scores are significantly above or below 0, it would suggest that the gene set is up or down regulated, respectively. If however this assumption of up and down regulation is unrealistic (i.e., non-linear), then an alternative approach (i.e., the *maximum distance in random walk from 0*) may be used. This approach creates a bimodal distribution of GSVA scores, but the interpretation should remain that if GSVA scores are different from 0, then there is an association within the gene set. Either approach should produce GSVA scores ranging between -1 and 1.
+
+# Example
+
+## Simulate the data
+
+We will show an example based on simulated data. To simulate the data, we utilize the `simulate_data` function within the package and modify some inputs on how many features / subjects should be generated. We simulate the reference and input datasets from the same distributions.
+
+```{r}
+# Load the package
+library(rsGSVA)
+library(tidyverse)
+
+# Simulate the data
+set.seed(123)
+reference_data <- simulate_data(n = 50, # Sample size of 50 subjects 
+                                pfh = 10, # 10 genes correlated with the outcome and the other genes within the gene set
+                                pnh = 10, # 10 genes correlated with each other but not the outcome
+                                mnh = 1, # 1 set of genes correlated with each other but not the outcome
+                                pfi = 10, # 10 genes correlated with the outcome but not each other
+                                pni = 10000, # 10000 genes for complete noise
+                                SNRh = 0.8, SNRo = 0.8 # Increase the signal level of the simulation
+                                )
+# Simulate the input data using the same inputs, just a smaller sample size
+input_data <- simulate_data(n = 20,  pfh = 10, pnh = 10, mnh = 1, pfi = 10, pni = 10000,
+                            SNRh = 0.8, SNRo = 0.8)
+
+# Pull out the sequencing data
+reference_data_x <- reference_data$x
+input_data_x <- input_data$x
+
+# Pull out the outcome information and make it binary by thresholding at 0
+input_data_outcome <- input_data$y
+input_data_outcome <- case_when(input_data_outcome <= 0 ~ "Control", input_data_outcome > 0 ~ "Disease")
+```
+
+## Compare the reference and input dataset distributions
+
+Before calculating the stable GSVA scores, we are interested in first checking that the reference and input datasets have comparable gene distributions. We may do this by utilizing the `ecdf_compare function`. If we plot the `ecdf_comparison` object, we see that the probabilities appear to be randomly distributed around 0.5, suggesting that the input dataset does indeed appear to be comparable to the distribution of the reference dataset.
+
+```{r}
+compare_distributions <- ecdf_comparison(X = input_data_x, train_expr = reference_data_x)
+plot(compare_distributions)
+```
+
+## Compute the stable GSVA scores
+
+We now will now estimate the stable scores using the simulated data. First, we must define our gene sets of interest. Here, we will pull out the gene sets for the functional hub (genes correlated with each other and the outcome), non-functional hub (genes correlated with each other but NOT the outcome), functional independents (genes correlated with the outcome but NOT each other), and a subset of noise features (genes not correlated with each other or the outcome).
+
+```{r}
+# What are the gene sets of interest?
+gene_list <- list(`functional_hub` = rownames(input_data_x)[grepl("fh", rownames(input_data_x), fixed = T)],
+                  `nonfunctional_hub` = rownames(input_data_x)[grepl("nh", rownames(input_data_x), fixed = T)],
+                  `functional_independents` = rownames(input_data_x)[grepl("fi", rownames(input_data_x), fixed = T)],
+                  `noise` = rownames(input_data_x)[grepl("ni", rownames(input_data_x), fixed = T)][1:10])
+
+# Compute the stable scores
+rsGSVA_results <- rsGSVA(X = input_data_x,
+                                             gs = gene_list,
+                                             train_expr = reference_data_x,
+                                             verbose = FALSE)
+rsGSVA_results
+```
+
+The results from `rsGSVA` are gene sets (rows) by subjects (columns), and the values within the results contain the stable GSVA score estimates. We will now visualize the differences in gene set scores by the outcomes of the patients in the figure below.
+
+```{r}
+library(ggplot2)
+
+# Make into a long dataset
+rsGSVA_results_long <- data.frame(subjid = colnames(rsGSVA_results),
+                                           t(rsGSVA_results)) %>%
+  pivot_longer(cols = rownames(rsGSVA_results), values_to = "rsGSVA", names_to = "Gene Set") %>%
+  # Merge in the outcome data
+  left_join(y = data.frame(outcome = input_data_outcome,
+                           subjid = colnames(input_data_x)),
+            by = "subjid")
+
+# Generate the plot
+ggplot(data = rsGSVA_results_long, aes(x = `Gene Set`, y = rsGSVA, col = outcome)) +
+  geom_boxplot()
+```
+
+From the above figure, we see that the stable GSVA scores appear to be larger for the disease group as compared to the control group within the functional hub.
+
+# References 
+
+Hänzelmann S, Castelo R, Guinney J. GSVA: gene set variation analysis for microarray and RNA-seq data. BMC bioinformatics. 2013 Dec;14:1-5.
