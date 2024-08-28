@@ -2,8 +2,8 @@ Package: rsGSVA
 Title: assigns reference stablizing scores when performing GSVA
 Version: 0.0.1.0
 Authors@R: c(
-    person("William", "Jordan", role = c("aut", "cre")),
-    person("Lorin", "Towle-Miller", role =  c("aut"), email = "miller.lorin.m@gmail.com"))
+    person("Lorin", "Towle-Miller", role =  c("aut", "cre"),email = "miller.lorin.m@gmail.com"),
+    person("William", "Jordan", role = c("aut")))
 Description: Modification of GSVA that allows use of reference dataset thereby enabling stable assignment of GSVA enrichment scores
 License: None
 Encoding: UTF-8
